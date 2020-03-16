@@ -1,8 +1,12 @@
 #ifndef SRC_UTILS_H_
 #define SRC_UTILS_H_
 
-#include "include/uv_http_t.h"
+#include "uv_http_t.h"
+#ifdef USE_LLHTTP
+#include "llhttp.h"
+#else
 #include "http_parser.h"
+#endif
 
 typedef struct uv_http_data_s uv_http_data_t;
 
@@ -21,7 +25,5 @@ void uv_http_data_free(uv_http_data_t* data);
 
 int uv_http_data_queue(uv_http_data_t* data, const char* bytes, size_t size);
 void uv_http_data_dequeue(uv_http_data_t* data, size_t size);
-
-uv_http_method_t uv_http_convert_method(enum http_method method);
 
 #endif  /* SRC_UTILS_H_ */

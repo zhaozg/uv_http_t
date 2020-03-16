@@ -1,11 +1,19 @@
 #ifndef SRC_PRIVATE_H_
 #define SRC_PRIVATE_H_
 
+#ifdef USE_LLHTTP
+#include "llhttp.h"
+#else
 #include "http_parser.h"
+typedef http_parser llhttp__t;
+typedef http_parser_settings llhttp_settings_t;
+#endif
 #include "uv_link_t.h"
 
-#include "src/utils.h"
-#include "src/queue.h"
+#include "utils.h"
+#include "queue.h"
+
+#define ARRAY_LIMITED_SIZE 512
 
 enum uv_http_header_state_e {
   kUVHTTPHeaderStateURL,
@@ -32,8 +40,10 @@ struct uv_http_s {
 
   unsigned int reading:2;
 
-  http_parser parser;
-  http_parser_settings parser_settings;
+  llhttp_t parser;
+#ifndef USE_LLHTTP
+  llhttp_settings_t *parser_settings;
+#endif
 
   struct {
     uv_http_data_t data;
@@ -44,7 +54,7 @@ struct uv_http_s {
 
     /* TODO(indutny): consider increasing it, the idea is to handle the
      * most common length of URLs */
-    char storage[512];
+    char storage[2048];
   } pending;
 };
 
@@ -56,13 +66,14 @@ enum uv_http_side_e {
 typedef enum uv_http_side_e uv_http_side_t;
 
 enum uv_http_error_e {
-  kUVHTTPErrShutdownNotChunked = UV_ERRNO_MAX - 1,
-  kUVHTTPErrCloseWithoutShutdown = UV_ERRNO_MAX - 2,
-  kUVHTTPErrDoubleRespond = UV_ERRNO_MAX - 3,
-  kUVHTTPErrResponseRequired = UV_ERRNO_MAX - 4,
-  kUVHTTPErrParserExecute = UV_ERRNO_MAX - 5,
-  kUVHTTPErrConnectionReset = UV_ERRNO_MAX - 6,
-  kUVHTTPErrReqCallback = UV_ERRNO_MAX - 7
+  kUVHTTPErrDoubleShutdown       = UV_ERRNO_MAX - 1,
+  kUVHTTPErrShutdownRequired     = UV_ERRNO_MAX - 2,
+  kUVHTTPErrDoubleRespond        = UV_ERRNO_MAX - 3,
+  kUVHTTPErrResponseRequired     = UV_ERRNO_MAX - 4,
+  kUVHTTPErrParserExecute        = UV_ERRNO_MAX - 5,
+  kUVHTTPErrConnectionReset      = UV_ERRNO_MAX - 6,
+  kUVHTTPErrReqCallback          = UV_ERRNO_MAX - 7,
+  kUVHTTPErrWriteExceed          = UV_ERRNO_MAX - 8,
 };
 
 static const unsigned int kReadingMask = kUVHTTPSideRequest |
@@ -95,6 +106,5 @@ int uv_http_req_prepare_write(uv_http_req_t* req,
                               uv_buf_t* storage, unsigned int nstorage,
                               const uv_buf_t* bufs, unsigned int nbufs,
                               uv_buf_t** pbufs, unsigned int* npbufs);
-
 
 #endif  /* SRC_PRIVATE_H_ */

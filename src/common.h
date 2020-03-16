@@ -4,9 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "include/uv_http_t.h"
+#include "uv_http_t.h"
 
-#include "src/private.h"
+#include "private.h"
 
 #define container_of(ptr, type, member) \
   ((type *) ((char *) (ptr) - offsetof(type, member)))

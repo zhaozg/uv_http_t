@@ -1,4 +1,4 @@
-#include "src/common.h"
+#include "common.h"
 
 static int uv_http_req_link_read_start(uv_link_t* link) {
   uv_http_req_t* req;
@@ -49,8 +49,8 @@ static int uv_http_req_link_write(uv_link_t* link,
                                   uv_link_write_cb cb,
                                   void* arg) {
   uv_http_req_t* req;
-  uv_buf_t buf_storage[1024];
-  char prefix[1024];
+  uv_buf_t buf_storage[ARRAY_LIMITED_SIZE+2];
+  char prefix[ARRAY_LIMITED_SIZE+2];
   uv_buf_t* pbufs;
   int err;
 
@@ -66,6 +66,9 @@ static int uv_http_req_link_write(uv_link_t* link,
   if (req->http->active_req != req)
     return UV_EAGAIN;
 
+  if (nbufs > ARRAY_SIZE(buf_storage))
+    return kUVHTTPErrWriteExceed;
+
   err = uv_http_req_prepare_write(req, prefix, sizeof(prefix),
                                   buf_storage, ARRAY_SIZE(buf_storage),
                                   bufs, nbufs, &pbufs, &nbufs);
@@ -74,8 +77,6 @@ static int uv_http_req_link_write(uv_link_t* link,
 
   err = uv_link_propagate_write(req->http->parent, source, pbufs, nbufs, NULL,
                                 cb, arg);
-  if (pbufs != buf_storage && pbufs != bufs)
-    free(pbufs);
 
   return err;
 }
@@ -93,13 +94,11 @@ static int uv_http_req_link_try_write(uv_link_t* link,
   return UV_ENOSYS;
 }
 
-
 static int uv_http_req_link_shutdown(uv_link_t* link,
                                      uv_link_t* source,
                                      uv_link_shutdown_cb cb,
                                      void* arg) {
   uv_http_req_t* req;
-  uv_buf_t buf;
   int err;
 
   req = (uv_http_req_t*) link;
@@ -110,18 +109,25 @@ static int uv_http_req_link_shutdown(uv_link_t* link,
   if (req->http->active_req != req)
     return UV_EAGAIN;
 
-  /* TODO(indutny): invoke callback for non-chunked */
-  if (!req->chunked || !req->has_response || req->shutdown)
-    return kUVHTTPErrShutdownNotChunked;
+  if ( !req->has_response )
+    return kUVHTTPErrResponseRequired;
 
-  buf = uv_buf_init("0\r\n\r\n", 5);
-  err = uv_link_propagate_write(req->http->parent, source, &buf, 1, NULL, cb,
-                                arg);
-  if (err != 0)
-    return err;
+  if ( req->shutdown )
+    return kUVHTTPErrDoubleShutdown;
+
+  if ( req->chunked ) {
+    uv_buf_t buf = uv_buf_init("0\r\n\r\n", 5);
+
+    err = uv_link_propagate_write(req->http->parent, source, &buf, 1, NULL, cb,
+                                  arg);
+    if (err != 0)
+      return err;
+
+  } else {
+    cb(source, 0, arg);
+  }
 
   req->shutdown = 1;
-  uv_http_on_req_finish(req->http, req);
   return 0;
 }
 
@@ -135,9 +141,9 @@ static void uv_http_req_link_close(uv_link_t* link, uv_link_t* source,
 
   /* Request wasn't shutdown */
   if (!req->shutdown) {
-    uv_http_error(req->http, kUVHTTPErrCloseWithoutShutdown);
-    uv_http_on_req_finish(req->http, req);
+    uv_http_error(req->http, kUVHTTPErrShutdownRequired);
   }
+  uv_http_on_req_finish(req->http, req);
 
   uv_http_close_req(req->http, req);
   uv_http_maybe_close(req->http);

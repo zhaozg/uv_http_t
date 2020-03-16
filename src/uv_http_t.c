@@ -1,21 +1,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "src/common.h"
-#include "src/utils.h"
+#include "common.h"
+#include "utils.h"
 
 
-static int uv_http_on_message_begin(http_parser* parser);
-static int uv_http_on_headers_complete(http_parser* parser);
-static int uv_http_on_message_complete(http_parser* parser);
-static int uv_http_on_url(http_parser* parser, const char* value,
+static int uv_http_on_message_begin(llhttp_t* parser);
+static int uv_http_on_url(llhttp_t* parser, const char* value,
                           size_t length);
-static int uv_http_on_header_field(http_parser* parser, const char* value,
+static int uv_http_on_header_field(llhttp_t* parser, const char* value,
                                    size_t length);
-static int uv_http_on_header_value(http_parser* parser, const char* value,
+static int uv_http_on_header_value(llhttp_t* parser, const char* value,
                                    size_t length);
-static int uv_http_on_body(http_parser* parser, const char* value,
+static int uv_http_on_headers_complete(llhttp_t* parser);
+static int uv_http_on_body(llhttp_t* parser, const char* value,
                            size_t length);
+static int uv_http_on_message_complete(llhttp_t* parser);
 
 static int uv_http_process_pending(uv_http_t* http, uv_http_side_t side);
 static int uv_http_emit_req(uv_http_t* http);
@@ -23,9 +23,31 @@ static void uv_http_free(uv_http_t* http);
 static int uv_http_on_field(uv_http_t* http, uv_http_header_state_t next,
                             const char* value, size_t size, int* res);
 
-uv_http_t* uv_http_create(uv_http_req_handler_cb cb, int* err) {
+static inline llhttp_settings_t* uv_http_init() {
+  static int init = 0;
+  static llhttp_settings_t settings;
+  if (init == 0)
+  {
+    init = 1;
+#ifdef USE_LLHTTP
+    llhttp_settings_init(&settings);
+#else
+    http_parser_settings_init(&settings);
+#endif
+    settings.on_message_begin = uv_http_on_message_begin;
+    settings.on_url = uv_http_on_url;
+    settings.on_header_field = uv_http_on_header_field;
+    settings.on_header_value = uv_http_on_header_value;
+    settings.on_headers_complete = uv_http_on_headers_complete;
+    settings.on_body = uv_http_on_body;
+    settings.on_message_complete = uv_http_on_message_complete;
+  }
+  return &settings;
+}
+
+uv_http_t* uv_http_create(uv_http_req_handler_cb cb, int* err, void* data) {
   uv_http_t* res;
-  http_parser_settings* settings;
+  llhttp_settings_t* settings;
 
   res = calloc(1, sizeof(*res));
   if (res == NULL) {
@@ -38,21 +60,19 @@ uv_http_t* uv_http_create(uv_http_req_handler_cb cb, int* err) {
   *err = uv_link_init((uv_link_t*) res, &uv_http_methods);
   if (*err != 0)
     goto fail_link_init;
+  settings = uv_http_init();
 
+#ifdef USE_LLHTTP
+  llhttp_init(&res->parser, HTTP_REQUEST, settings);
+  llhttp_pause(&res->parser);
+#else
   http_parser_init(&res->parser, HTTP_REQUEST);
   http_parser_pause(&res->parser, 1);
-  http_parser_settings_init(&res->parser_settings);
-  settings = &res->parser_settings;
-
-  settings->on_message_begin = uv_http_on_message_begin;
-  settings->on_url = uv_http_on_url;
-  settings->on_header_field = uv_http_on_header_field;
-  settings->on_header_value = uv_http_on_header_value;
-  settings->on_headers_complete = uv_http_on_headers_complete;
-  settings->on_body = uv_http_on_body;
-  settings->on_message_complete = uv_http_on_message_complete;
+  res->parser_settings = settings;
+#endif
 
   /* read_start() should not be blocked by this */
+  res->reading = 0;
   res->reading |= (unsigned int) kUVHTTPSideRequest;
 
   uv_http_data_init(&res->pending.data, NULL, 0);
@@ -60,6 +80,7 @@ uv_http_t* uv_http_create(uv_http_req_handler_cb cb, int* err) {
   uv_http_data_init(&res->pending.url_or_header, res->pending.storage,
                     sizeof(res->pending.storage));
 
+  res->data = data;
   return res;
 
 fail_link_init:
@@ -90,13 +111,11 @@ void uv_http_destroy(uv_http_t* http, uv_link_t* source, uv_link_close_cb cb) {
   uv_http_free(http);
 }
 
-
 void uv_http_close_req(uv_http_t* http, uv_http_req_t* req) {
   http->active_reqs--;
   if (http->last_req == req)
     http->last_req = NULL;
 }
-
 
 void uv_http_maybe_close(uv_http_t* http) {
   uv_link_close_cb cb;
@@ -117,11 +136,25 @@ void uv_http_maybe_close(uv_http_t* http) {
   uv_http_free(http);
 }
 
-
 int uv_http_consume(uv_http_t* http, const char* data, size_t size) {
+  const char* next_pos;
+#ifdef USE_LLHTTP
+  enum llhttp_errno err = llhttp_execute(&http->parser, data, size);
+
+  if (err != HPE_OK && err != HPE_PAUSED) {
+    /* Parser error */
+    /* TODO(indutny): error message? */
+    return kUVHTTPErrParserExecute;
+  }
+  next_pos = llhttp_get_error_pos(&http->parser);
+
+  /* Fully parsed */
+  if (next_pos == NULL)
+    return 0;
+#else
   size_t parsed;
 
-  parsed = http_parser_execute(&http->parser, &http->parser_settings, data,
+  parsed = http_parser_execute(&http->parser, http->parser_settings, data,
                                size);
 
   if (http->parser.http_errno != HPE_OK &&
@@ -131,16 +164,16 @@ int uv_http_consume(uv_http_t* http, const char* data, size_t size) {
     return kUVHTTPErrParserExecute;
   }
 
-  CHECK(parsed <= size, "Parsed more than given!");
-
   /* Fully parsed */
   if (parsed == size)
     return 0;
 
-  /* Store pending data for later use */
-  return uv_http_data_queue(&http->pending.data, data + parsed, size - parsed);
-}
+  next_pos = data + parsed;
+#endif
 
+  /* Store pending data for later use */
+  return uv_http_data_queue(&http->pending.data, next_pos, size + data - next_pos);
+}
 
 int uv_http_process_pending(uv_http_t* http, uv_http_side_t side) {
   uv_http_data_t* data;
@@ -177,13 +210,14 @@ int uv_http_process_pending(uv_http_t* http, uv_http_side_t side) {
 /* Called on `uv_link_shutdown(req)` or `uv_link_close(req)` */
 void uv_http_on_req_finish(uv_http_t* http, uv_http_req_t* req) {
   uv_http_req_active_cb cb;
-
-  if (http->active_req != req)
+  if (http->active_req != req) {
     return;
+  }
 
   http->active_req = http->active_req->next;
-  if (http->active_req == NULL || http->active_req->on_active == NULL)
+  if (http->active_req == NULL || http->active_req->on_active == NULL) {
     return;
+  }
 
   cb = http->active_req->on_active;
   http->active_req->on_active = NULL;
@@ -221,8 +255,7 @@ void uv_http_req_error(uv_http_t* http, uv_http_req_t* req, int err) {
     req->pending_err = err;
 }
 
-
-int uv_http_accept(uv_http_t* http, uv_http_req_t* req) {
+int uv_http_accept(uv_http_t* http, uv_http_req_t* req, void* data) {
   int err;
 
   if (!http->pending_accept)
@@ -236,10 +269,12 @@ int uv_http_accept(uv_http_t* http, uv_http_req_t* req) {
 
   req->http_major = http->parser.http_major;
   req->http_minor = http->parser.http_minor;
-  req->method = uv_http_convert_method(http->parser.method);
-  req->chunked = 1;
+  req->method = http->parser.method;
+  req->chunked = 0;
+  req->keep_alive = 0;
 
   req->http = http;
+  req->data = data;
 
   /* Chain requests together */
   if (http->last_req == NULL)
@@ -273,13 +308,20 @@ int uv_http_read_start(uv_http_t* http, uv_http_side_t side) {
   old = http->reading;
   http->reading |= (unsigned int) side;
   if (old == http->reading)
+  {
     return 0;
+  }
 
   /* Wait until both reading sides will request reads */
-  if ((http->reading & kReadingMask) != kReadingMask)
+  if ((http->reading & kReadingMask) != kReadingMask) {
     return 0;
+  }
 
+#ifdef USE_LLHTTP
+  llhttp_resume(&http->parser);
+#else
   http_parser_pause(&http->parser, 0);
+#endif
   err = uv_http_process_pending(http, kUVHTTPSideConnection);
   if (err != 0)
     return err;
@@ -296,7 +338,11 @@ int uv_http_read_stop(uv_http_t* http, uv_http_side_t side) {
   if (old == http->reading)
     return 0;
 
+#ifdef USE_LLHTTP
+  llhttp_pause(&http->parser);
+#else
   http_parser_pause(&http->parser, 1);
+#endif
   return uv_link_read_stop(http->parent);
 }
 
@@ -309,7 +355,7 @@ int uv_http_emit_req(uv_http_t* http) {
   http->pending_accept = 1;
 
   url = &http->pending.url_or_header;
-  http->request_handler(http, url->value, url->size);
+  http->request_handler(http, url->value, url->size, http->data);
 
   /* TODO(indutny): is there any reason to loosen this? */
   CHECK_EQ(http->pending_accept, 0, "request_handler must accept request");
@@ -390,7 +436,7 @@ int uv_http_on_field(uv_http_t* http, uv_http_header_state_t next,
 /* Parser callbacks */
 
 
-int uv_http_on_message_begin(http_parser* parser) {
+int uv_http_on_message_begin(llhttp_t* parser) {
   uv_http_t* http;
 
   http = container_of(parser, uv_http_t, parser);
@@ -401,7 +447,7 @@ int uv_http_on_message_begin(http_parser* parser) {
 }
 
 
-int uv_http_on_url(http_parser* parser, const char* value,
+int uv_http_on_url(llhttp_t* parser, const char* value,
                    size_t length) {
   uv_http_t* http;
   int err;
@@ -417,7 +463,7 @@ int uv_http_on_url(http_parser* parser, const char* value,
 }
 
 
-int uv_http_on_headers_complete(http_parser* parser) {
+int uv_http_on_headers_complete(llhttp_t* parser) {
   uv_http_t* http;
   int err;
   int res;
@@ -433,7 +479,7 @@ int uv_http_on_headers_complete(http_parser* parser) {
 }
 
 
-int uv_http_on_header_field(http_parser* parser, const char* value,
+int uv_http_on_header_field(llhttp_t* parser, const char* value,
                             size_t length) {
   uv_http_t* http;
   int err;
@@ -447,7 +493,7 @@ int uv_http_on_header_field(http_parser* parser, const char* value,
 }
 
 
-int uv_http_on_header_value(http_parser* parser, const char* value,
+int uv_http_on_header_value(llhttp_t* parser, const char* value,
                             size_t length) {
   uv_http_t* http;
   int err;
@@ -461,7 +507,7 @@ int uv_http_on_header_value(http_parser* parser, const char* value,
 }
 
 
-int uv_http_on_body(http_parser* parser, const char* value, size_t length) {
+int uv_http_on_body(llhttp_t* parser, const char* value, size_t length) {
   uv_http_t* http;
   uv_http_req_t* req;
 
@@ -475,7 +521,7 @@ int uv_http_on_body(http_parser* parser, const char* value, size_t length) {
 }
 
 
-int uv_http_on_message_complete(http_parser* parser) {
+int uv_http_on_message_complete(llhttp_t* parser) {
   uv_http_t* http;
   uv_http_req_t* req;
   int err;
@@ -486,6 +532,11 @@ int uv_http_on_message_complete(http_parser* parser) {
     return 0;
 
   req->state |= kUVHTTPReqStateEnd;
+#ifdef USE_LLHTTP
+  req->keep_alive = llhttp_should_keep_alive(parser);
+#else
+  req->keep_alive = http_should_keep_alive(parser);
+#endif
 
   uv_http_req_eof(http, req);
 
@@ -497,3 +548,4 @@ int uv_http_on_message_complete(http_parser* parser) {
   uv_http_error(http, err);
   return -1;
 }
+

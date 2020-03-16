@@ -1,10 +1,16 @@
+all:	build
+	ninja -C build
+
 test: dist
 	./out/Release/uv_http_t-test
 
 example: dist
 	./out/Release/uv_http_t-example
 
-dist:
-	gypkg build uv_http_t.gyp
+build:
+	mkdir build
+	meson build
+clean:
+	rf -rf build
 
-.PHONY: test example dist
+.PHONY: test example dist build

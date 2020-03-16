@@ -116,7 +116,7 @@ static void http_client_server_test(void (*client_fn)(int fd),
            "uv_link_source_init(server.source)");
 
   /* Server part of the pair is uv_http_t */
-  CHECK_NE(server.http = uv_http_create(handler, &err), NULL,
+  CHECK_NE(server.http = uv_http_create(handler, &err, NULL), NULL,
            "uv_http_create(server.http)");
 
   /* Chain server's links */

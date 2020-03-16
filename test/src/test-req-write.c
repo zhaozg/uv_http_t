@@ -55,7 +55,7 @@ static void req_on_active(uv_http_req_t* req, int status) {
   values[1] = uv_buf_init("some-value", 10);
 
   msg = uv_buf_init("OK", 2);
-  CHECK_EQ(uv_http_req_respond(req, 200, &msg, fields, values, 2),
+  CHECK_EQ(uv_http_req_respond(req, 200, &msg, fields, values, 2, NULL, NULL),
            0,
            "uv_http_req_write");
 
@@ -71,10 +71,10 @@ static void req_on_active(uv_http_req_t* req, int status) {
            "uv_read_stop(server)");
 }
 
-
 static void req_write_server(uv_http_t* http,
                                const char* url,
-                               size_t url_len) {
+                               size_t url_len,
+                               void* arg) {
   CHECK_EQ(uv_http_accept(http, &req), 0, "uv_http_accept()");
 
   uv_http_req_on_active(&req, req_on_active);

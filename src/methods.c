@@ -1,4 +1,4 @@
-#include "src/common.h"
+#include "common.h"
 
 static int uv_http_link_read_start(uv_link_t* link) {
   uv_http_t* http;
@@ -69,21 +69,10 @@ static void uv_http_link_close(uv_link_t* link, uv_link_t* source,
 }
 
 
-/* TODO(indutny): multi-threading? */
-static char shared_storage[16 * 1024];
-static int shared_storage_busy;
-
-
 static void uv_http_link_alloc_cb_override(uv_link_t* link,
                                            size_t suggested_size,
                                            uv_buf_t* buf) {
-  if (shared_storage_busy) {
-    *buf = uv_buf_init(malloc(suggested_size), suggested_size);
-  } else {
-    /* Most likely case */
-    *buf = uv_buf_init(shared_storage, sizeof(shared_storage));
-    shared_storage_busy = 1;
-  }
+  *buf = uv_buf_init(malloc(suggested_size), suggested_size);
 
   if (buf->base == NULL)
     buf->len = 0;
@@ -106,8 +95,7 @@ static void uv_http_link_read_cb_override(uv_link_t* link,
   if (err != 0)
     uv_http_error(http, err);
 
-  shared_storage_busy = 0;
-  if (buf != NULL && buf->base != shared_storage)
+  if (buf != NULL && buf->base)
     free(buf->base);
 }
 
@@ -115,10 +103,10 @@ static void uv_http_link_read_cb_override(uv_link_t* link,
 /* NOTE: Intentionally not static */
 const char* uv_http_link_strerror(uv_link_t* link, int err) {
   switch (err) {
-    case kUVHTTPErrShutdownNotChunked:
-      return "uv_http_t: can't shutdown request that isn't chunked";
-    case kUVHTTPErrCloseWithoutShutdown:
-      return "uv_http_t: can't close chunked request without shutdown";
+    case kUVHTTPErrDoubleShutdown:
+      return "uv_http_t: double shutdown attempt";
+    case kUVHTTPErrShutdownRequired:
+      return "uv_http_t: can't close request without shutdown";
     case kUVHTTPErrDoubleRespond:
       return "uv_http_t: double respond attempt";
     case kUVHTTPErrResponseRequired:
@@ -129,6 +117,8 @@ const char* uv_http_link_strerror(uv_link_t* link, int err) {
       return "uv_http_t: connection reset";
     case kUVHTTPErrReqCallback:
       return "uv_http_t: request callback failure";
+    case kUVHTTPErrWriteExceed:
+      return "uv_http_t: response write bufs exceed limit";
     default:
       return NULL;
   }

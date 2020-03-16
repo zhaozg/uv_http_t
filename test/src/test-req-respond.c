@@ -39,7 +39,7 @@ static void req_on_active(uv_http_req_t* req, int status) {
   values[1] = uv_buf_init("some-value", 10);
 
   msg = uv_buf_init("OK", 2);
-  CHECK_EQ(uv_http_req_respond(req, 200, &msg, fields, values, 2),
+  CHECK_EQ(uv_http_req_respond(req, 200, &msg, fields, values, 2, NULL, NULL),
            0,
            "uv_http_req_respond");
 

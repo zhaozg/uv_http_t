@@ -1,9 +1,8 @@
 #include <string.h>
+#include <assert.h>
 
-#include "src/common.h"
-#include "src/utils.h"
-
-static void uv_http_req_write_cb(uv_link_t* link, int status, void* arg);
+#include "common.h"
+#include "utils.h"
 
 void uv_http_req_eof(uv_http_t* http, uv_http_req_t* req) {
   if (req->reading)
@@ -11,7 +10,6 @@ void uv_http_req_eof(uv_http_t* http, uv_http_req_t* req) {
 
   req->pending_eof = 1;
 }
-
 
 int uv_http_req_consume(uv_http_t* http, uv_http_req_t* req,
                         const char* data, size_t size) {
@@ -52,7 +50,6 @@ int uv_http_req_consume(uv_http_t* http, uv_http_req_t* req,
   return 0;
 }
 
-
 void uv_http_req_on_active(uv_http_req_t* req, uv_http_req_active_cb cb) {
   if (req->http->active_req == req)
     return cb(req, 0);
@@ -60,26 +57,16 @@ void uv_http_req_on_active(uv_http_req_t* req, uv_http_req_active_cb cb) {
   req->on_active = cb;
 }
 
-
-void uv_http_req_write_cb(uv_link_t* link, int status, void* arg) {
-  uv_http_req_t* req;
-
-  req = (uv_http_req_t*) link;
-
-  /* Unfortunately, write errors are global */
-  if (status != 0)
-    uv_http_error(req->http, status);
-}
-
-
 int uv_http_req_respond(uv_http_req_t* req,
                         unsigned short status,
                         const uv_buf_t* message,
                         const uv_buf_t header_fields[],
                         const uv_buf_t header_values[],
-                        unsigned int header_count) {
+                        unsigned int header_count,
+                        uv_link_write_cb cb,
+                        void *arg) {
   uv_http_t* http;
-  uv_buf_t buf_storage[1024];
+  uv_buf_t buf_storage[ARRAY_LIMITED_SIZE];
   char status_str[16];
   size_t status_len;
   uv_buf_t* bufs;
@@ -87,6 +74,7 @@ int uv_http_req_respond(uv_http_req_t* req,
   unsigned int nbufs;
   unsigned int i;
   int err;
+  int full;
   size_t total;
 
   http = req->http;
@@ -99,17 +87,12 @@ int uv_http_req_respond(uv_http_req_t* req,
     return UV_EAGAIN;
 
   /* TODO(indutny): default message */
-  nbufs = header_count * 4 + 3;
-  if (req->chunked)
-    nbufs++;
+  nbufs = header_count * 4 + 4;
 
   if (nbufs > ARRAY_SIZE(buf_storage))
-    bufs = malloc(nbufs * sizeof(*bufs));
-  else
-    bufs = buf_storage;
+    return kUVHTTPErrWriteExceed;
 
-  if (bufs == NULL)
-    return UV_ENOMEM;
+  bufs = buf_storage;
 
   status_len = snprintf(status_str, sizeof(status_str), "HTTP/%hu.%hu %hu ",
                         req->http_major, req->http_minor, status);
@@ -126,7 +109,7 @@ int uv_http_req_respond(uv_http_req_t* req,
   if (req->chunked)
     bufs[nbufs - 1] = uv_buf_init("Transfer-Encoding: chunked\r\n\r\n", 30);
   else
-    bufs[nbufs - 1] = uv_buf_init("\r\n\r\n", 4);
+    bufs[nbufs - 1] = uv_buf_init("\r\n", 2);
 
   total = 0;
   for (i = 0; i < nbufs; i++)
@@ -137,8 +120,10 @@ int uv_http_req_respond(uv_http_req_t* req,
     goto done;
 
   /* Fully written */
+  full = 0;
   if ((size_t) err == total) {
     err = 0;
+    full = 1;
     goto done;
   }
 
@@ -158,19 +143,19 @@ int uv_http_req_respond(uv_http_req_t* req,
     }
   }
 
-  err = uv_link_propagate_write(http->parent, (uv_link_t*) req, pbufs, nbufs,
-                                NULL, uv_http_req_write_cb, NULL);
+  err = uv_link_propagate_write(http->parent, req->child, pbufs, nbufs,
+                                NULL, cb, arg);
 
 done:
-  if (bufs != buf_storage)
-    free(bufs);
 
-  if (err == 0)
+  if (err == 0) {
     req->has_response = 1;
+    if (full)
+      cb(req->child, 0, arg);
+  }
 
   return err;
 }
-
 
 int uv_http_req_prepare_write(uv_http_req_t* req,
                               char* prefix_storage, unsigned int prefix_size,
@@ -205,12 +190,8 @@ int uv_http_req_prepare_write(uv_http_req_t* req,
   }
 
   nres = nbufs + 2;
-  if (nstorage >= nres)
-    res = storage;
-  else
-    res = malloc(nres * sizeof(*res));
-  if (res == NULL)
-    return UV_ENOMEM;
+  assert(nstorage>=nres);
+  res = storage;
 
   prefix_len = snprintf(prefix_storage, prefix_size, "%llx\r\n",
                         (unsigned long long) total);

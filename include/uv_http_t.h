@@ -3,6 +3,13 @@
 
 #include "uv.h"
 #include "uv_link_t.h"
+#ifdef USE_LLHTTP
+#include "llhttp.h"
+#else
+#include "http_parser.h"
+typedef http_parser llhttp_t;
+typedef enum http_method llhttp_method_t;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,48 +20,11 @@ typedef struct uv_http_s uv_http_t;
 typedef struct uv_http_req_s uv_http_req_t;
 
 typedef void (*uv_http_req_handler_cb)(uv_http_t* http, const char* url,
-                                       size_t url_size);
+                                       size_t url_size, void* arg);
 typedef int (*uv_http_req_cb)(uv_http_req_t* req);
 typedef int (*uv_http_req_value_cb)(uv_http_req_t* req, const char* value,
                                     size_t length);
 typedef void (*uv_http_req_active_cb)(uv_http_req_t* req, int status);
-
-enum uv_http_method_e {
-  UV_HTTP_DELETE,
-  UV_HTTP_GET,
-  UV_HTTP_HEAD,
-  UV_HTTP_POST,
-  UV_HTTP_PUT,
-  UV_HTTP_CONNECT,
-  UV_HTTP_OPTIONS,
-  UV_HTTP_TRACE,
-  UV_HTTP_COPY,
-  UV_HTTP_LOCK,
-  UV_HTTP_MKCOL,
-  UV_HTTP_MOVE,
-  UV_HTTP_PROPFIND,
-  UV_HTTP_PROPPATCH,
-  UV_HTTP_SEARCH,
-  UV_HTTP_UNLOCK,
-  UV_HTTP_BIND,
-  UV_HTTP_REBIND,
-  UV_HTTP_UNBIND,
-  UV_HTTP_ACL,
-  UV_HTTP_REPORT,
-  UV_HTTP_MKACTIVITY,
-  UV_HTTP_CHECKOUT,
-  UV_HTTP_MERGE,
-  UV_HTTP_MSEARCH,
-  UV_HTTP_NOTIFY,
-  UV_HTTP_SUBSCRIBE,
-  UV_HTTP_UNSUBSCRIBE,
-  UV_HTTP_PATCH,
-  UV_HTTP_PURGE,
-  UV_HTTP_MKCALENDAR,
-  UV_HTTP_LINK,
-  UV_HTTP_UNLINK
-};
-typedef enum uv_http_method_e uv_http_method_t;
 
 /* Flags, actually */
 enum uv_http_req_state_e {
@@ -71,10 +41,12 @@ struct uv_http_req_s {
 
   unsigned short http_major;
   unsigned short http_minor;
-  uv_http_method_t method;
+  llhttp_method_t method;
 
-  /* Use chunked encoding, `1` by default */
+  /* Use chunked encoding, `0` by default */
   unsigned int chunked:1;
+  /* Keep connection alive, `0` by default */
+  unsigned int keep_alive:1;
 
   uv_http_req_value_cb on_header_field;
   uv_http_req_value_cb on_header_value;
@@ -96,8 +68,9 @@ struct uv_http_req_s {
   uv_http_req_t* next;
 };
 
-UV_EXTERN uv_http_t* uv_http_create(uv_http_req_handler_cb cb, int* err);
-UV_EXTERN int uv_http_accept(uv_http_t* http, uv_http_req_t* req);
+UV_EXTERN uv_http_t* uv_http_create(uv_http_req_handler_cb cb, int* err, void* data);
+UV_EXTERN int uv_http_accept(uv_http_t* http, uv_http_req_t* req, void* data);
+UV_EXTERN void uv_http_error(uv_http_t* http, int err);
 
 /* Request */
 
@@ -110,7 +83,9 @@ UV_EXTERN int uv_http_req_respond(uv_http_req_t* req,
                                   const uv_buf_t* message,
                                   const uv_buf_t header_fields[],
                                   const uv_buf_t header_values[],
-                                  unsigned int header_count);
+                                  unsigned int header_count,
+                                  uv_link_write_cb cb,
+                                  void *data);
 
 #ifdef __cplusplus
 }
